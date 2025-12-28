@@ -1,0 +1,126 @@
+{
+  "name": "cortex-ai",
+  "displayName": "Cortex AI",
+  "description": "Natural language interface for Cortex, the AI-powered package manager for Linux",
+  "version": "0.1.0",
+  "publisher": "cortexai",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cortexlinux/cortex"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "linux",
+    "ai",
+    "terminal",
+    "devops",
+    "package-manager"
+  ],
+  "activationEvents": [
+    "onView:cortex.panel",
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cortex.runCommand",
+        "title": "Cortex: Run Command"
+      },
+      {
+        "command": "cortex.openPanel",
+        "title": "Cortex: Open Panel"
+      },
+      {
+        "command": "cortex.setApiKey",
+        "title": "Cortex: Set API Key"
+      },
+      {
+        "command": "cortex.clearApiKey",
+        "title": "Cortex: Clear API Key"
+      },
+      {
+        "command": "cortex.checkStatus",
+        "title": "Cortex: Check Connection Status"
+      }
+    ],
+    "configuration": {
+      "title": "Cortex AI",
+      "properties": {
+        "cortex.llmProvider": {
+          "type": "string",
+          "default": "anthropic",
+          "enum": ["anthropic", "openai", "ollama"],
+          "enumDescriptions": [
+            "Use Anthropic Claude API",
+            "Use OpenAI GPT API",
+            "Use local Ollama (no API key required)"
+          ],
+          "description": "The LLM provider to use for Cortex"
+        },
+        "cortex.ollamaEndpoint": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama API endpoint (only used when provider is ollama)"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cortex",
+          "title": "Cortex AI",
+          "icon": "$(terminal)"
+        }
+      ]
+    },
+    "views": {
+      "cortex": [
+        {
+          "type": "webview",
+          "id": "cortex.panel",
+          "name": "Cortex AI"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "cortex.runCommand",
+        "key": "ctrl+shift+c",
+        "mac": "cmd+shift+c"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.107.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.48.1",
+    "eslint": "^9.39.1",
+    "esbuild": "^0.27.1",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
