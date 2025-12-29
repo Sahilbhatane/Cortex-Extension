@@ -3,15 +3,14 @@
   "displayName": "Cortex AI",
   "description": "Natural language interface for Cortex, the AI-powered package manager for Linux",
   "version": "0.1.0",
-  "publisher": "cortexai",
+  "publisher": "CortexLinux",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/cortexlinux/cortex"
   },
-  "icon": "logo.svg",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.107.0"
   },
   "categories": [
     "Other"
