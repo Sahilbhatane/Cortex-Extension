@@ -141,26 +141,34 @@ export function deactivate() {
 async function isCortexInstalled(): Promise<boolean> {
 	const platform = detectPlatform();
 	
+	// If user has manually confirmed installation, trust that
+	if (extensionContext?.globalState.get<boolean>('cortex.userConfirmedInstall')) {
+		return true;
+	}
+	
 	try {
-		// For WSL on Windows, run the check through WSL
 		if (platform.platform === 'wsl' && process.platform === 'win32') {
-			await execFileAsync('wsl', ['which', 'cortex']);
+			// For WSL on Windows, run check through WSL with bash
+			await execFileAsync('wsl', ['bash', '-ic', 'which cortex || pip show cortex-apt-cli'], { timeout: 5000 });
+		} else if (process.platform === 'win32') {
+			// Native Windows - check with where command
+			await execFileAsync('where', ['cortex'], { timeout: 3000 });
 		} else {
-			await execFileAsync('which', ['cortex']);
+			// Linux/macOS
+			await execFileAsync('which', ['cortex'], { timeout: 3000 });
 		}
 		return true;
 	} catch {
-		// Try pip show as fallback
-		try {
-			if (platform.platform === 'wsl' && process.platform === 'win32') {
-				await execFileAsync('wsl', ['pip', 'show', 'cortex-apt-cli']);
-			} else {
-				await execFileAsync('pip', ['show', 'cortex-apt-cli']);
+		// Try pip show as fallback for non-WSL
+		if (process.platform !== 'win32' || platform.platform !== 'wsl') {
+			try {
+				await execFileAsync('pip', ['show', 'cortex-apt-cli'], { timeout: 3000 });
+				return true;
+			} catch {
+				// Fall through
 			}
-			return true;
-		} catch {
-			return false;
 		}
+		return false;
 	}
 }
 
@@ -184,15 +192,26 @@ async function checkAndInstallCortex(context: vscode.ExtensionContext): Promise<
 		return true;
 	}
 
-	// Prompt user to install Cortex
-	const action = await vscode.window.showWarningMessage(
-		'Cortex CLI is not installed. Would you like to install it now?',
-		'Install Cortex',
-		'Later'
-	);
-
-	if (action === 'Install Cortex') {
-		return await installCortexCli(context);
+	// Auto-prompt to install Cortex CLI on first activation
+	const hasPromptedBefore = context.globalState.get<boolean>('cortex.installPrompted', false);
+	if (!hasPromptedBefore) {
+		await context.globalState.update('cortex.installPrompted', true);
+		const action = await vscode.window.showInformationMessage(
+			'Welcome to Cortex AI! The Cortex CLI is required. Install it now?',
+			'Install Now',
+			'Already Installed',
+			'Later'
+		);
+		if (action === 'Install Now') {
+			return await installCortexCli(context);
+		} else if (action === 'Already Installed') {
+			// User confirms they have it installed - trust them
+			await context.globalState.update('cortex.userConfirmedInstall', true);
+			cortexInstalled = true;
+			await context.globalState.update(CORTEX_INSTALLED_KEY, true);
+			vscode.window.showInformationMessage('Great! Cortex is ready to use.');
+			return true;
+		}
 	}
 
 	return false;
@@ -650,7 +669,7 @@ class CortexPanelProvider implements vscode.WebviewViewProvider {
 			localResourceRoots: [this.extensionUri]
 		};
 
-		webviewView.webview.html = this.getHtml();
+		webviewView.webview.html = this.getHtml(webviewView.webview);
 
 		webviewView.webview.onDidReceiveMessage(async message => {
 			// P1: Validate message structure before processing
@@ -686,8 +705,21 @@ class CortexPanelProvider implements vscode.WebviewViewProvider {
 				case 'installCli':
 					await this.installCli();
 					break;
+				case 'confirmCliInstalled':
+					await this.confirmCliInstalled();
+					break;
 			}
 		});
+	}
+
+	private async confirmCliInstalled() {
+		// User confirms they have Cortex installed - trust them
+		await this.context.globalState.update('cortex.userConfirmedInstall', true);
+		cortexInstalled = true;
+		await this.context.globalState.update(CORTEX_INSTALLED_KEY, true);
+		vscode.window.showInformationMessage('Great! Cortex is ready to use.');
+		await updateStatusBar(this.context);
+		await this.checkEnvironment();
 	}
 
 	private async installCli() {
@@ -765,13 +797,12 @@ class CortexPanelProvider implements vscode.WebviewViewProvider {
 
 	private getCliInstallMessage(): string {
 		return `
-			<div class="setup-card">
-				<h3>🔧 Cortex CLI Not Found</h3>
-				<p>The Cortex CLI is required to use this extension. Click below to install it automatically.</p>
-				<button class="primary-btn" onclick="installCli()">Install Cortex CLI</button>
-				<p class="hint">This will install <code>cortex-apt-cli</code> via pip.</p>
-			</div>
-		`;
+## Welcome to Cortex AI
+
+To get started, you'll need the **Cortex CLI** installed on your system.
+
+Choose an option below to continue:
+		`.trim();
 	}
 
 	private async confirmSetup() {
@@ -866,13 +897,15 @@ Your API key is already configured. Click the button below when Cortex CLI is in
 		`.trim();
 	}
 
-	private getHtml(): string {
+	private getHtml(webview: vscode.Webview): string {
+		const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'logo.svg'));
+		
 		return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
 <title>Cortex AI</title>
 <style>
 * {
@@ -886,6 +919,21 @@ html, body {
 	font-size: var(--vscode-font-size);
 	color: var(--vscode-foreground);
 	background: var(--vscode-sideBar-background);
+}
+.header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 12px;
+	border-bottom: 1px solid var(--vscode-widget-border);
+}
+.header img {
+	width: 28px;
+	height: 28px;
+}
+.header h1 {
+	font-size: 14px;
+	font-weight: 600;
 }
 .container {
 	display: flex;
@@ -1057,10 +1105,105 @@ button:disabled {
 .setup-btn:hover {
 	background: var(--vscode-button-hoverBackground);
 }
+.cli-install-card {
+	background: linear-gradient(135deg, var(--vscode-editor-background) 0%, var(--vscode-sideBar-background) 100%);
+	border: 1px solid var(--vscode-focusBorder);
+	border-radius: 12px;
+	padding: 28px 24px;
+	text-align: center;
+	max-width: 380px;
+	margin: 20px auto;
+}
+.cli-install-card h2 {
+	margin-bottom: 12px;
+	font-size: 20px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+.cli-install-card p {
+	margin-bottom: 8px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 13px;
+	line-height: 1.5;
+}
+.install-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	padding: 12px 28px;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border: none;
+	border-radius: 8px;
+	cursor: pointer;
+	font-size: 14px;
+	font-weight: 600;
+	transition: all 0.2s ease;
+	min-width: 180px;
+}
+.install-btn:hover {
+	background: var(--vscode-button-hoverBackground);
+	transform: translateY(-1px);
+}
+.install-btn:disabled {
+	opacity: 0.7;
+	cursor: wait;
+	transform: none;
+}
+.install-hint {
+	margin-top: 16px !important;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.8;
+}
+.cli-btn-container {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	align-items: center;
+	margin-top: 20px;
+}
+.skip-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	padding: 10px 24px;
+	background: transparent;
+	color: var(--vscode-textLink-foreground);
+	border: 1px solid var(--vscode-textLink-foreground);
+	border-radius: 8px;
+	cursor: pointer;
+	font-size: 13px;
+	font-weight: 500;
+	transition: all 0.2s ease;
+	min-width: 180px;
+}
+.skip-btn:hover {
+	background: var(--vscode-textLink-foreground);
+	color: var(--vscode-editor-background);
+}
+.btn-icon {
+	font-weight: bold;
+	font-size: 14px;
+}
+.btn-icon.spin {
+	display: inline-block;
+	animation: spin 1s linear infinite;
+}
+@keyframes spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
 </style>
 </head>
 <body>
 <div class="container">
+	<div class="header">
+		<img src="${logoUri}" alt="Cortex AI">
+		<h1>Cortex AI</h1>
+	</div>
 	<div class="output" id="output"></div>
 	<div class="input-area">
 		<div class="input-wrapper">
@@ -1077,6 +1220,43 @@ button:disabled {
 	const input = document.getElementById('input');
 	const submit = document.getElementById('submit');
 	const resetSetup = document.getElementById('resetSetup');
+
+	function appendCliInstallCard(content) {
+		const div = document.createElement('div');
+		div.className = 'message cli-install-card';
+		div.innerHTML = parseMarkdown(content);
+		
+		const btnContainer = document.createElement('div');
+		btnContainer.className = 'cli-btn-container';
+		
+		const installBtn = document.createElement('button');
+		installBtn.className = 'install-btn';
+		installBtn.innerHTML = '<span class="btn-icon">↓</span> Install Cortex CLI';
+		installBtn.onclick = function() {
+			installBtn.disabled = true;
+			installBtn.innerHTML = '<span class="btn-icon spin">◦</span> Installing...';
+			vscode.postMessage({ type: 'installCli' });
+		};
+		btnContainer.appendChild(installBtn);
+		
+		const skipBtn = document.createElement('button');
+		skipBtn.className = 'skip-btn';
+		skipBtn.innerHTML = '<span class="btn-icon">✓</span> Already Installed';
+		skipBtn.onclick = function() {
+			vscode.postMessage({ type: 'confirmCliInstalled' });
+		};
+		btnContainer.appendChild(skipBtn);
+		
+		div.appendChild(btnContainer);
+		
+		const hint = document.createElement('p');
+		hint.className = 'install-hint';
+		hint.textContent = 'Installs cortex-apt-cli via pip (Python required)';
+		div.appendChild(hint);
+		
+		output.appendChild(div);
+		output.scrollTop = output.scrollHeight;
+	}
 
 	function appendMessage(className, content, options = {}) {
 		const div = document.createElement('div');
@@ -1195,7 +1375,7 @@ button:disabled {
 
 			case 'cliNotInstalled':
 				output.innerHTML = '';
-				appendMessage('apikey-setup', message.text, { showInstallCliBtn: true });
+				appendCliInstallCard(message.text);
 				if (message.disableInput) disableInput();
 				break;
 

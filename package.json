@@ -9,6 +9,7 @@
     "type": "git",
     "url": "https://github.com/cortexlinux/cortex"
   },
+  "icon": "logo.svg",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -59,7 +60,11 @@
         "cortex.llmProvider": {
           "type": "string",
           "default": "anthropic",
-          "enum": ["anthropic", "openai", "ollama"],
+          "enum": [
+            "anthropic",
+            "openai",
+            "ollama"
+          ],
           "enumDescriptions": [
             "Use Anthropic Claude API",
             "Use OpenAI GPT API",
@@ -79,7 +84,7 @@
         {
           "id": "cortex",
           "title": "Cortex AI",
-          "icon": "$(terminal)"
+          "icon": "logo-hollow.svg"
         }
       ]
     },
@@ -115,15 +120,16 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.107.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "typescript-eslint": "^8.48.1",
-    "eslint": "^9.39.1",
+    "@types/vscode": "^1.107.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.27.1",
+    "eslint": "^9.39.1",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "typescript-eslint": "^8.48.1"
   }
 }
