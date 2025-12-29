@@ -23,8 +23,7 @@
     "package-manager"
   ],
   "activationEvents": [
-    "onView:cortex.panel",
-    "onStartupFinished"
+    "onView:cortex.panel"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -48,6 +47,10 @@
       {
         "command": "cortex.checkStatus",
         "title": "Cortex: Check Connection Status"
+      },
+      {
+        "command": "cortex.installCli",
+        "title": "Cortex: Install CLI"
       }
     ],
     "configuration": {

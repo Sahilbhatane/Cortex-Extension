@@ -15,6 +15,7 @@ Cortex uses AI (Claude, OpenAI, or local Ollama) to interpret your request and g
 
 ## Features
 
+- **Automatic CLI Installation**: Cortex CLI is automatically installed when you first use the extension (via pip)
 - **Command Palette Integration**: `Cortex: Run Command` (Ctrl+Shift+C / Cmd+Shift+C)
 - **Side Panel**: Copilot-like chat interface for natural language queries
 - **Status Bar Indicator**: Shows connection status and configured provider
@@ -34,32 +35,29 @@ macOS and native Windows are not supported (Cortex requires apt/Linux).
 
 ## Prerequisites
 
-1. **Cortex CLI must be installed**
+- **Python & pip**: Required for automatic Cortex CLI installation
+  
+  ```bash
+  # Ubuntu/Debian
+  sudo apt install python3 python3-pip
+  ```
 
-   ```bash
-   git clone https://github.com/cortexlinux/cortex.git
-   cd cortex
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -e .
-   ```
-
-2. **Verify installation**
-
-   ```bash
-   cortex --version
-   ```
+> **Note**: The Cortex CLI (`cortex-apt-cli`) is automatically installed via pip when you first use the extension. No manual installation is required!
 
 ## Getting Started
 
 1. **Install the extension** from the VS Code Marketplace
 
-2. **Configure your API provider**:
+2. **The extension will prompt you to install Cortex CLI** if not already installed
+   - Click "Install Cortex CLI" when prompted
+   - The installation runs via `pip install cortex-apt-cli`
+
+3. **Configure your API provider**:
    - Open Command Palette → `Cortex: Set API Key`
    - Choose your provider (Anthropic, OpenAI, or Ollama)
    - Enter your API key (not required for Ollama)
 
-3. **Start using Cortex**:
+4. **Start using Cortex**:
    - Press `Ctrl+Shift+C` (Windows/Linux) or `Cmd+Shift+C` (macOS)
    - Or open the Cortex panel from the Activity Bar
 
@@ -72,6 +70,7 @@ macOS and native Windows are not supported (Cortex requires apt/Linux).
 | `Cortex: Set API Key` | - | Configure API key for your LLM provider |
 | `Cortex: Clear API Key` | - | Remove stored API keys |
 | `Cortex: Check Connection Status` | - | View current configuration and status |
+| `Cortex: Install CLI` | - | Manually install/reinstall Cortex CLI |
 
 ## Settings
 
@@ -95,7 +94,7 @@ To actually execute (not just preview):
 ## Known Limitations
 
 - **Linux only**: Cortex wraps `apt` and is designed for Debian-based systems
-- **CLI required**: The Cortex CLI must be installed separately
+- **Python/pip required**: Automatic CLI installation requires Python and pip
 - **API key required**: Without a configured LLM provider (or Ollama), Cortex cannot interpret prompts
 
 ## Links

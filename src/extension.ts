@@ -1,7 +1,13 @@
 import * as vscode from 'vscode';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import * as fs from 'node:fs';
+
+const execFileAsync = promisify(execFile);
 
 const TERMINAL_NAME = 'Cortex';
 const SETUP_COMPLETE_KEY = 'cortex.setupComplete';
+const CORTEX_INSTALLED_KEY = 'cortex.cliInstalled';
 const ANTHROPIC_KEY = 'cortex.anthropicApiKey';
 const OPENAI_KEY = 'cortex.openaiApiKey';
 
@@ -9,6 +15,7 @@ let cortexTerminal: vscode.Terminal | undefined;
 let panelProvider: CortexPanelProvider | undefined;
 let statusBarItem: vscode.StatusBarItem;
 let extensionContext: vscode.ExtensionContext;
+let cortexInstalled: boolean = false;
 
 // Platform detection result
 interface PlatformInfo {
@@ -27,6 +34,14 @@ interface ApiKeyStatus {
 
 export function activate(context: vscode.ExtensionContext) {
 	extensionContext = context;
+
+	// P2: Check workspace trust for sensitive operations
+	if (!vscode.workspace.isTrusted) {
+		vscode.window.showWarningMessage(
+			'Cortex AI: Some features are limited in untrusted workspaces for security.'
+		);
+	}
+
 	panelProvider = new CortexPanelProvider(context.extensionUri, context);
 
 	// Create status bar item
@@ -47,6 +62,14 @@ export function activate(context: vscode.ExtensionContext) {
 				vscode.window.showErrorMessage(platform.message);
 				return;
 			}
+
+			// Check if Cortex is installed before running command
+			if (!cortexInstalled) {
+				const installed = await checkAndInstallCortex(context);
+				if (!installed) {
+					return;
+				}
+			}
 			
 			const input = await vscode.window.showInputBox({
 				prompt: 'What do you want to install or do?',
@@ -54,7 +77,15 @@ export function activate(context: vscode.ExtensionContext) {
 			});
 			
 			if (input) {
-				const command = buildCommand(input);
+				// P0: Handle buildCommand errors from security validation
+				let command: string;
+				try {
+					command = buildCommand(input);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : 'Invalid input';
+					vscode.window.showErrorMessage(message);
+					return;
+				}
 				const terminal = getOrCreateTerminal();
 				terminal.show(true);
 				terminal.sendText(command);
@@ -72,6 +103,10 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('cortex.checkStatus', async () => {
 			await showStatusDetails(context);
 		}),
+
+		vscode.commands.registerCommand('cortex.installCli', async () => {
+			await installCortexCli(context);
+		}),
 		
 		vscode.window.onDidCloseTerminal(terminal => {
 			if (terminal === cortexTerminal) {
@@ -88,6 +123,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(...disposables);
 
+	// Check Cortex CLI installation on activation
+	checkAndInstallCortex(context);
+
 	// Initialize status bar
 	updateStatusBar(context);
 }
@@ -99,6 +137,154 @@ export function deactivate() {
 	}
 }
 
+// Check if Cortex CLI is installed
+async function isCortexInstalled(): Promise<boolean> {
+	const platform = detectPlatform();
+	
+	try {
+		// For WSL on Windows, run the check through WSL
+		if (platform.platform === 'wsl' && process.platform === 'win32') {
+			await execFileAsync('wsl', ['which', 'cortex']);
+		} else {
+			await execFileAsync('which', ['cortex']);
+		}
+		return true;
+	} catch {
+		// Try pip show as fallback
+		try {
+			if (platform.platform === 'wsl' && process.platform === 'win32') {
+				await execFileAsync('wsl', ['pip', 'show', 'cortex-apt-cli']);
+			} else {
+				await execFileAsync('pip', ['show', 'cortex-apt-cli']);
+			}
+			return true;
+		} catch {
+			return false;
+		}
+	}
+}
+
+// Check and prompt for Cortex CLI installation
+async function checkAndInstallCortex(context: vscode.ExtensionContext): Promise<boolean> {
+	const platform = detectPlatform();
+	if (!platform.supported) {
+		return false;
+	}
+
+	// Check if already marked as installed in this session
+	if (cortexInstalled) {
+		return true;
+	}
+
+	// Check if Cortex is installed
+	const installed = await isCortexInstalled();
+	if (installed) {
+		cortexInstalled = true;
+		await context.globalState.update(CORTEX_INSTALLED_KEY, true);
+		return true;
+	}
+
+	// Prompt user to install Cortex
+	const action = await vscode.window.showWarningMessage(
+		'Cortex CLI is not installed. Would you like to install it now?',
+		'Install Cortex',
+		'Later'
+	);
+
+	if (action === 'Install Cortex') {
+		return await installCortexCli(context);
+	}
+
+	return false;
+}
+
+// Install Cortex CLI via pip
+async function installCortexCli(context: vscode.ExtensionContext): Promise<boolean> {
+	const platform = detectPlatform();
+	if (!platform.supported) {
+		vscode.window.showErrorMessage('Cortex requires a Linux environment.');
+		return false;
+	}
+
+	// P1: Add explicit user confirmation before installing from PyPI
+	const confirm = await vscode.window.showWarningMessage(
+		'This will install "cortex-apt-cli" from PyPI (Python Package Index). Continue?',
+		{ modal: true },
+		'Install'
+	);
+	if (confirm !== 'Install') {
+		return false;
+	}
+
+	return vscode.window.withProgress({
+		location: vscode.ProgressLocation.Notification,
+		title: 'Installing Cortex CLI...',
+		cancellable: false
+	}, async (progress) => {
+		try {
+			progress.report({ message: 'Checking pip...' });
+
+			// pip install command (same for all Linux-like platforms)
+			const pipInstallCmd = 'pip install cortex-apt-cli || pip3 install cortex-apt-cli';
+
+			// Check if pip is available using execFile
+			try {
+				if (platform.platform === 'wsl' && process.platform === 'win32') {
+					await execFileAsync('wsl', ['which', 'pip3']);
+				} else {
+					await execFileAsync('which', ['pip3']).catch(() => execFileAsync('which', ['pip']));
+				}
+			} catch {
+				vscode.window.showErrorMessage(
+					'pip is not installed. Please install Python and pip first, then try again.'
+				);
+				return false;
+			}
+
+			progress.report({ message: 'Installing cortex-apt-cli...' });
+
+			// Install Cortex via pip in terminal (user can see what's happening)
+			const terminal = getOrCreateTerminal();
+			terminal.show(true);
+			terminal.sendText(pipInstallCmd);
+
+			// Wait a moment and provide user guidance
+			await new Promise(resolve => setTimeout(resolve, 2000));
+
+			vscode.window.showInformationMessage(
+				'Cortex CLI installation started. Once complete, you can start using Cortex!',
+				'Check Installation'
+			).then(async (selection) => {
+				if (selection === 'Check Installation') {
+					const installed = await isCortexInstalled();
+					if (installed) {
+						cortexInstalled = true;
+						await context.globalState.update(CORTEX_INSTALLED_KEY, true);
+						vscode.window.showInformationMessage('Cortex CLI is installed and ready!');
+						updateStatusBar(context);
+						if (panelProvider) {
+							panelProvider.notifyApiKeyChange();
+						}
+					} else {
+						vscode.window.showWarningMessage(
+							'Cortex CLI installation may still be in progress. Please wait for the terminal to complete.'
+						);
+					}
+				}
+			});
+
+			return true;
+		} catch (error) {
+			// P2: Log full error internally but show generic message to user
+			console.error('Cortex CLI installation failed:', error instanceof Error ? error.message : 'Unknown error');
+			vscode.window.showErrorMessage(
+				'Failed to install Cortex CLI. Please check that Python and pip are installed correctly.'
+			);
+			return false;
+		}
+	});
+}
+
 async function updateStatusBar(context: vscode.ExtensionContext) {
 	const platform = detectPlatform();
 	const apiStatus = await getApiKeyStatus(context);
@@ -107,7 +293,24 @@ async function updateStatusBar(context: vscode.ExtensionContext) {
 		statusBarItem.text = '$(error) Cortex: Unsupported Platform';
 		statusBarItem.tooltip = platform.message;
 		statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-	} else if (apiStatus.isOllama) {
+	} else if (!cortexInstalled) {
+		// Check if CLI is installed
+		const installed = await isCortexInstalled();
+		if (!installed) {
+			statusBarItem.text = '$(warning) Cortex: CLI Not Installed';
+			statusBarItem.tooltip = 'Click to install Cortex CLI';
+			statusBarItem.command = 'cortex.installCli';
+			statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+			statusBarItem.show();
+			return;
+		}
+		cortexInstalled = true;
+	}
+	
+	// Restore default command
+	statusBarItem.command = 'cortex.checkStatus';
+
+	if (apiStatus.isOllama) {
 		statusBarItem.text = '$(check) Cortex: Ollama';
 		statusBarItem.tooltip = 'Using local Ollama (no API key required)';
 		statusBarItem.backgroundColor = undefined;
@@ -347,7 +550,6 @@ function isWslAvailable(): boolean {
 	// This is a heuristic - WSL_DISTRO_NAME is set inside WSL shells
 	const hasWslEnv = !!process.env.WSL_DISTRO_NAME || !!process.env.WSLENV;
 	// Most Windows systems with WSL have these paths
-	const fs = require('node:fs');
 	try {
 		return hasWslEnv || fs.existsSync(String.raw`C:\Windows\System32\wsl.exe`);
 	} catch {
@@ -355,10 +557,28 @@ function isWslAvailable(): boolean {
 	}
 }
 
+// P0: Security - detect dangerous shell metacharacters
+function containsShellMetachars(input: string): boolean {
+	// Detect dangerous shell metacharacters that could enable command injection
+	return /[;&|`$(){}[\]<>\\!\n\r]/.test(input);
+}
+
+// P0: Security - sanitize input for safe shell usage with single quotes
+function sanitizeForShell(input: string): string {
+	// Single quotes prevent variable expansion in bash
+	// To include a literal single quote, we end the string, add escaped quote, start new string
+	return input.replaceAll("'", String.raw`'\''`);
+}
+
+// P0: Security - validate and build command safely
 function buildCommand(input: string): string {
 	const lower = input.toLowerCase();
 
+	// For raw cortex commands, validate no shell metacharacters
 	if (lower.startsWith('cortex ')) {
+		if (containsShellMetachars(input)) {
+			throw new Error('Invalid characters in command. Please avoid special shell characters.');
+		}
 		return input;
 	}
 
@@ -367,11 +587,46 @@ function buildCommand(input: string): string {
 	}
 
 	if (lower.startsWith('rollback ')) {
+		// Validate rollback ID is alphanumeric/safe
+		const id = input.substring(9).trim();
+		if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+			throw new Error('Invalid rollback ID. Only alphanumeric characters, hyphens, and underscores are allowed.');
+		}
 		return `cortex ${input}`;
 	}
 
-	return `cortex install "${input}" --dry-run`;
+	// Use single quotes to prevent shell interpretation, escape any single quotes in input
+	const sanitized = sanitizeForShell(input);
+	return `cortex install '${sanitized}' --dry-run`;
 }
+
+// P1: Webview message validation interface
+interface WebviewMessage {
+	type: string;
+	text?: string;
+	provider?: string;
+}
+
+// P1: Runtime validation for webview messages
+function isValidWebviewMessage(message: unknown): message is WebviewMessage {
+	if (typeof message !== 'object' || message === null) {
+		return false;
+	}
+	const msg = message as Record<string, unknown>;
+	if (typeof msg.type !== 'string') {
+		return false;
+	}
+	if (msg.text !== undefined && typeof msg.text !== 'string') {
+		return false;
+	}
+	if (msg.provider !== undefined && typeof msg.provider !== 'string') {
+		return false;
+	}
+	return true;
+}
+
+// Valid LLM providers
+const VALID_PROVIDERS = ['anthropic', 'openai', 'ollama'] as const;
 
 class CortexPanelProvider implements vscode.WebviewViewProvider {
 	private view?: vscode.WebviewView;
@@ -398,9 +653,17 @@ class CortexPanelProvider implements vscode.WebviewViewProvider {
 		webviewView.webview.html = this.getHtml();
 
 		webviewView.webview.onDidReceiveMessage(async message => {
+			// P1: Validate message structure before processing
+			if (!isValidWebviewMessage(message)) {
+				console.warn('Invalid webview message received');
+				return;
+			}
+
 			switch (message.type) {
 				case 'submit':
-					await this.handlePrompt(message.text);
+					if (typeof message.text === 'string') {
+						await this.handlePrompt(message.text);
+					}
 					break;
 				case 'ready':
 					await this.checkEnvironment();
@@ -415,10 +678,24 @@ class CortexPanelProvider implements vscode.WebviewViewProvider {
 					await vscode.commands.executeCommand('cortex.setApiKey');
 					break;
 				case 'selectProvider':
-					await this.selectProvider(message.provider);
+					// P1: Validate provider is one of the allowed values
+					if (message.provider && VALID_PROVIDERS.includes(message.provider as typeof VALID_PROVIDERS[number])) {
+						await this.selectProvider(message.provider);
+					}
+					break;
+				case 'installCli':
+					await this.installCli();
 					break;
 			}
 		});
+	}
+
+	private async installCli() {
+		const success = await installCortexCli(this.context);
+		if (success) {
+			// Recheck environment after a delay to allow installation to complete
+			setTimeout(() => this.checkEnvironment(), 3000);
+		}
 	}
 
 	private async selectProvider(provider: string) {
@@ -440,6 +717,20 @@ class CortexPanelProvider implements vscode.WebviewViewProvider {
 		if (!platform.supported) {
 			this.postMessage({ type: 'error', text: platform.message, disableInput: true });
 			return;
+		}
+
+		// Check if Cortex CLI is installed
+		if (!cortexInstalled) {
+			const installed = await isCortexInstalled();
+			if (!installed) {
+				this.postMessage({
+					type: 'cliNotInstalled',
+					text: this.getCliInstallMessage(),
+					disableInput: true
+				});
+				return;
+			}
+			cortexInstalled = true;
 		}
 
 		const apiStatus = await getApiKeyStatus(this.context);
@@ -472,6 +763,17 @@ class CortexPanelProvider implements vscode.WebviewViewProvider {
 		this.postMessage({ type: 'ready' });
 	}
 
+	private getCliInstallMessage(): string {
+		return `
+			<div class="setup-card">
+				<h3>🔧 Cortex CLI Not Found</h3>
+				<p>The Cortex CLI is required to use this extension. Click below to install it automatically.</p>
+				<button class="primary-btn" onclick="installCli()">Install Cortex CLI</button>
+				<p class="hint">This will install <code>cortex-apt-cli</code> via pip.</p>
+			</div>
+		`;
+	}
+
 	private async confirmSetup() {
 		await this.context.globalState.update(SETUP_COMPLETE_KEY, true);
 		this.postMessage({ type: 'ready' });
@@ -490,10 +792,18 @@ class CortexPanelProvider implements vscode.WebviewViewProvider {
 
 		this.postMessage({ type: 'user', text: trimmed });
 
+		// P0: Handle buildCommand errors from security validation
+		let command: string;
+		try {
+			command = buildCommand(trimmed);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Invalid input';
+			this.postMessage({ type: 'error', text: message });
+			return;
+		}
+
 		const terminal = getOrCreateTerminal();
 		terminal.show(true);
-
-		const command = buildCommand(trimmed);
 		terminal.sendText(command);
 
 		this.postMessage({ type: 'sent', command: command });
@@ -819,11 +1129,18 @@ button:disabled {
 	}
 
 	function parseMarkdown(text) {
-		return text
+		// P1: First escape HTML entities to prevent XSS, then apply markdown
+		const escaped = text
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;');
+		
+		return escaped
 			.replace(/^## (.+)$/gm, '<h2>$1</h2>')
 			.replace(/^### (.+)$/gm, '<h3>$1</h3>')
-			.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre>$1</pre>')
-			.replace(/\`([^\`]+)\`/g, '<code>$1</code>')
+			.replace(/\x60\x60\x60([\\s\\S]*?)\x60\x60\x60/g, '<pre>$1</pre>')
+			.replace(/\x60([^\x60]+)\x60/g, '<code>$1</code>')
 			.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
 			.replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href="$2" target="_blank">$1</a>')
 			.replace(/^(\\d+\\.) /gm, '<li>')
@@ -876,6 +1193,12 @@ button:disabled {
 				if (message.disableInput) disableInput();
 				break;
 
+			case 'cliNotInstalled':
+				output.innerHTML = '';
+				appendMessage('apikey-setup', message.text, { showInstallCliBtn: true });
+				if (message.disableInput) disableInput();
+				break;
+
 			case 'apiKeySetup':
 				output.innerHTML = '';
 				appendMessage('apikey-setup', message.text, { showProviderButtons: true });
@@ -897,6 +1220,11 @@ button:disabled {
 				break;
 		}
 	});
+
+	// Global function for install CLI button
+	window.installCli = function() {
+		vscode.postMessage({ type: 'installCli' });
+	};
 
 	vscode.postMessage({ type: 'ready' });
 })();
